@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit' if item else 'Add' }} application{% endblock %}
+{% block content %}
+{% set val = namespace(status='', interview='', employment='', priority='', source='') %}
+{% if item %}
+  {% set val.status = item.status if item.status in statuses else 'Other' %}
+  {% set val.interview = item.interview_type if item.interview_type in interview_types else ('Other' if item.interview_type else '') %}
+  {% set val.employment = item.employment_type if item.employment_type in employment_types else ('Other' if item.employment_type else '') %}
+  {% set val.priority = item.priority if item.priority in priorities else 'Other' %}
+  {% set val.source = item.source if item.source in sources else ('Other' if item.source else '') %}
+{% else %}
+  {% set val.status = request.form.get('status','Applied') %}
+  {% set val.interview = request.form.get('interview_type','') %}
+  {% set val.employment = request.form.get('employment_type','') %}
+  {% set val.priority = request.form.get('priority','Medium') %}
+  {% set val.source = request.form.get('source','') %}
+{% endif %}
+<section class="form-page">
+  <a class="back-link" href="{{ url_for('dashboard') }}">← Back to dashboard</a>
+  <div class="form-title"><span class="eyebrow">OPPORTUNITY DETAILS</span><h1>{{ 'Edit application' if item else 'Add a new application' }}</h1><p class="muted">Keep all job, recruiter, interview and follow-up details in one place.</p></div>
+  <form method="post" class="panel application-form">
+    {% if csrf_enabled %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
+    <div class="form-section-title"><span class="section-number">01</span><div><h2>Role information</h2><p>Where are you applying?</p></div></div>
+    <div class="field-grid">
+      <label>Company name <span class="required">*</span><input name="company" required maxlength="150" placeholder="e.g. Tata Elxsi" value="{{ item.company if item else request.form.get('company', '') }}"></label>
+      <label>Job role <span class="required">*</span><input name="job_role" required maxlength="150" placeholder="e.g. Graduate Engineer Trainee" value="{{ item.job_role if item else request.form.get('job_role', '') }}"></label>
+      <label>Location<input name="location" maxlength="150" placeholder="Pune, Hybrid, Remote" value="{{ item.location if item else request.form.get('location', '') }}"></label>
+      <label>Job posting URL<input type="url" name="job_url" placeholder="https://..." value="{{ item.job_url if item else request.form.get('job_url', '') }}"></label>
+      <label>Date applied <span class="required">*</span><input type="date" name="application_date" required value="{{ item.application_date.isoformat() if item else request.form.get('application_date', today) }}"></label>
+      <label>Current status<select name="status" data-other-select required><option value="">Choose status</option>{% for status in statuses %}<option value="{{ status }}" {% if val.status == status %}selected{% endif %}>{{ status }}</option>{% endfor %}</select><input class="other-input" name="status_other" data-other-input placeholder="Enter your custom status" value="{{ item.status if item and item.status not in statuses else request.form.get('status_other','') }}" {% if val.status != 'Other' %}hidden{% endif %}></label>
+      <label>Employment type<select name="employment_type" data-other-select><option value="">Choose type</option>{% for kind in employment_types %}<option value="{{ kind }}" {% if val.employment == kind %}selected{% endif %}>{{ kind }}</option>{% endfor %}</select><input class="other-input" name="employment_type_other" data-other-input placeholder="Enter employment type" value="{{ item.employment_type if item and item.employment_type not in employment_types else request.form.get('employment_type_other','') }}" {% if val.employment != 'Other' %}hidden{% endif %}></label>
+      <label>Application source<select name="source" data-other-select><option value="">Choose source</option>{% for source in sources %}<option value="{{ source }}" {% if val.source == source %}selected{% endif %}>{{ source }}</option>{% endfor %}</select><input class="other-input" name="source_other" data-other-input placeholder="e.g. WhatsApp group, event" value="{{ item.source if item and item.source not in sources else request.form.get('source_other','') }}" {% if val.source != 'Other' %}hidden{% endif %}></label>
+      <label>Salary / stipend<input name="salary" maxlength="100" placeholder="e.g. ₹6 LPA or ₹15,000/month" value="{{ item.salary if item else request.form.get('salary','') }}"></label>
+      <label>Priority<select name="priority" data-other-select>{% for p in priorities %}<option value="{{ p }}" {% if val.priority == p %}selected{% endif %}>{{ p }}</option>{% endfor %}</select><input class="other-input" name="priority_other" data-other-input placeholder="Custom priority" value="{{ item.priority if item and item.priority not in priorities else request.form.get('priority_other','') }}" {% if val.priority != 'Other' %}hidden{% endif %}></label>
+      <label>Resume version used<input name="resume_version" maxlength="120" placeholder="e.g. Python Developer Resume v2" value="{{ item.resume_version if item else request.form.get('resume_version','') }}"></label>
+    </div>
+    <label class="full-label extra-label">Job description<textarea name="job_description" rows="4" placeholder="Paste responsibilities, required skills and qualifications…">{{ item.job_description if item else request.form.get('job_description','') }}</textarea></label>
+
+    <div class="form-section-title second-section"><span class="section-number">02</span><div><h2>Interview and deadlines</h2><p>Track interviews, assessments and follow-ups.</p></div></div>
+    <div class="field-grid">
+      <label>Next interview date<input type="date" name="interview_date" value="{{ item.interview_date.isoformat() if item and item.interview_date else request.form.get('interview_date','') }}"></label>
+      <label>Interview type<select name="interview_type" data-other-select><option value="">Choose type</option>{% for kind in interview_types %}<option value="{{ kind }}" {% if val.interview == kind %}selected{% endif %}>{{ kind }}</option>{% endfor %}</select><input class="other-input" name="interview_type_other" data-other-input placeholder="Enter interview type (e.g. founder round)" value="{{ item.interview_type if item and item.interview_type not in interview_types else request.form.get('interview_type_other','') }}" {% if val.interview != 'Other' %}hidden{% endif %}></label>
+      <label>Follow-up date<input type="date" name="follow_up_date" value="{{ item.follow_up_date.isoformat() if item and item.follow_up_date else request.form.get('follow_up_date','') }}"></label>
+      <label>Assessment deadline<input type="date" name="assessment_deadline" value="{{ item.assessment_deadline.isoformat() if item and item.assessment_deadline else request.form.get('assessment_deadline','') }}"></label>
+    </div>
+
+    <div class="form-section-title second-section"><span class="section-number">03</span><div><h2>Recruiter details</h2><p>Keep contact information handy; optional.</p></div></div>
+    <div class="field-grid">
+      <label>Recruiter name<input name="recruiter_name" maxlength="120" value="{{ item.recruiter_name if item else request.form.get('recruiter_name','') }}" placeholder="Recruiter / HR name"></label>
+      <label>Recruiter email<input type="email" name="recruiter_email" maxlength="150" value="{{ item.recruiter_email if item else request.form.get('recruiter_email','') }}" placeholder="hr@company.com"></label>
+      <label>Recruiter phone<input name="recruiter_phone" maxlength="50" value="{{ item.recruiter_phone if item else request.form.get('recruiter_phone','') }}" placeholder="Contact number"></label>
+      <label>Recruiter profile URL<input type="url" name="recruiter_url" value="{{ item.recruiter_url if item else request.form.get('recruiter_url','') }}" placeholder="https://... "></label>
+    </div>
+    <div class="form-section-title second-section"><span class="section-number">04</span><div><h2>Notes and context</h2><p>Save skills to revise, recruiter messages and useful links.</p></div></div>
+    <label class="full-label">Notes<textarea name="notes" rows="4" placeholder="What should you remember about this opportunity?">{{ item.notes if item else request.form.get('notes','') }}</textarea></label>
+    <div class="form-actions"><a class="btn secondary" href="{{ url_for('dashboard') }}">Cancel</a><button class="btn primary" type="submit">{{ 'Save changes' if item else 'Save application' }} <span>→</span></button></div>
+  </form>
+</section>
+{% endblock %}

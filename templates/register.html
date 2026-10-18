@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Create account{% endblock %}
+{% block content %}
+<section class="auth-layout register-layout">
+  <div class="auth-copy"><span class="eyebrow">START YOUR NEXT CHAPTER</span><h1>Make your job search feel <span>manageable.</span></h1><p>Create your private workspace for jobs, internships, application updates and interview dates.</p><div class="feature-line">✓ Your own application dashboard</div><div class="feature-line">✓ Searchable status and interview tracking</div><div class="feature-line">✓ Passwords stored as secure hashes</div></div>
+  <div class="auth-card">
+    <h2>Create your account</h2><p class="muted">It only takes a minute.</p>
+    <form method="post" class="form-stack">
+      {% if csrf_enabled %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
+      <label>Full name<input name="name" placeholder="Your name" required maxlength="100" autocomplete="name"></label>
+      <label>Email address<input type="email" name="email" placeholder="you@example.com" required autocomplete="email"></label>
+      <label>Password<input type="password" name="password" placeholder="At least 8 characters" minlength="8" required autocomplete="new-password"></label>
+      <button class="btn primary full" type="submit">Create account <span>→</span></button>
+    </form>
+    <p class="auth-switch">Already registered? <a href="{{ url_for('login') }}">Sign in</a></p>
+  </div>
+</section>
+{% endblock %}
