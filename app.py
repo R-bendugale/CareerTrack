@@ -1,34 +1,52 @@
 import csv
 import io
 import os
-from datetime import date, datetime, timedelta
-from functools import wraps
+import re
+from urllib.parse import urlsplit
+from datetime import date, timedelta
 
 from flask import Flask, flash, redirect, render_template, request, url_for, make_response
 from flask_login import LoginManager, UserMixin, current_user, login_required, login_user, logout_user
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import case, func, or_, text
 from werkzeug.security import check_password_hash, generate_password_hash
-from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
-app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-only-change-this-secret-key")
+APP_ENV = os.environ.get("APP_ENV", os.environ.get("FLASK_ENV", "development")).lower()
+IS_PRODUCTION = APP_ENV == "production"
+SECRET_KEY = os.environ.get("SECRET_KEY")
+if IS_PRODUCTION and not SECRET_KEY:
+    raise RuntimeError("Set a strong SECRET_KEY environment variable before starting CareerTrack in production.")
+app.config["SECRET_KEY"] = SECRET_KEY or "dev-only-change-this-secret-key"
 app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get("DATABASE_URL", "sqlite:///applications.db")
-if app.config["SQLALCHEMY_DATABASE_URI"].startswith("postgres://"):
-    app.config["SQLALCHEMY_DATABASE_URI"] = app.config["SQLALCHEMY_DATABASE_URI"].replace("postgres://", "postgresql://", 1)
+if app.config["SQLALCHEMY_DATABASE_URI"].startswith(("postgres://", "postgresql://")):
+    app.config["SQLALCHEMY_DATABASE_URI"] = app.config["SQLALCHEMY_DATABASE_URI"].replace("postgres://", "postgresql+psycopg://", 1).replace("postgresql://", "postgresql+psycopg://", 1)
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = IS_PRODUCTION
 app.config["REMEMBER_COOKIE_HTTPONLY"] = True
+app.config["REMEMBER_COOKIE_SECURE"] = IS_PRODUCTION
+app.config["SESSION_PROTECTION"] = "strong"
+app.config["WTF_CSRF_ENABLED"] = True
+app.config["WTF_CSRF_TIME_LIMIT"] = 3600
+app.config["PREFERRED_URL_SCHEME"] = "https" if IS_PRODUCTION else "http"
 
-# Optional security middleware: enabled when Flask-WTF is installed.
-try:
-    from flask_wtf.csrf import CSRFProtect
-    CSRFProtect(app)
-    app.jinja_env.globals["csrf_enabled"] = True
-except ImportError:
-    app.jinja_env.globals["csrf_enabled"] = False
+# CSRF protection is mandatory; Flask-WTF is a required dependency.
+from flask_wtf.csrf import CSRFProtect
+csrf = CSRFProtect(app)
+app.jinja_env.globals["csrf_enabled"] = True
+
+
+@app.after_request
+def add_security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    return response
+
 
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
@@ -139,16 +157,38 @@ def parse_date(value, field_name, optional=False):
         raise ValueError(f"Please enter a valid {field_name.lower()}.")
 
 
-def selected_value(field, choices, other_field):
+def validate_length(value, label, maximum, required=False):
+    value = (value or "").strip()
+    if required and not value:
+        raise ValueError(f"{label} is required.")
+    if len(value) > maximum:
+        raise ValueError(f"{label} must be {maximum} characters or fewer.")
+    return value
+
+
+def valid_email(value):
+    return bool(re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value or ""))
+
+
+def validate_http_url(value, label):
+    value = (value or "").strip()
+    if not value:
+        return value
+    parsed = urlsplit(value)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError(f"{label} must be a valid http:// or https:// URL.")
+    return value
+
+
+def selected_value(field, choices, other_field, required=False):
     value = request.form.get(field, "").strip()
     if value == "Other":
-        other = request.form.get(other_field, "").strip()
-        if not other:
-            raise ValueError(f"Please specify the other {field.replace('_', ' ')}.")
-        return other[:150]
+        other = validate_length(request.form.get(other_field, ""), f"Other {field.replace('_', ' ')}", 150, required=True)
+        return other
     if value and value not in choices:
-        # Allow an already saved custom value on edit, but only if explicitly provided via Other.
         raise ValueError(f"Please choose a valid {field.replace('_', ' ')}.")
+    if required and not value:
+        raise ValueError(f"Please choose a {field.replace('_', ' ')}.")
     return value
 
 
@@ -189,8 +229,10 @@ def register():
         password = request.form.get("password", "")
         if not name or not email or not password:
             flash("Please complete every required field.", "error")
-        elif len(password) < 8:
-            flash("Password must contain at least 8 characters.", "error")
+        elif len(name) > 100 or len(email) > 150 or not valid_email(email):
+            flash("Enter a valid name and email address within the allowed length.", "error")
+        elif len(password) < 8 or len(password) > 128:
+            flash("Password must contain between 8 and 128 characters.", "error")
         elif User.query.filter_by(email=email).first():
             flash("An account with that email already exists.", "error")
         else:
@@ -280,38 +322,35 @@ def dashboard():
 
 
 def save_application(item=None):
-    company = request.form.get("company", "").strip()
-    role = request.form.get("job_role", "").strip()
-    if not company or not role:
-        raise ValueError("Company and job role are required.")
-    status = selected_value("status", STATUSES, "status_other")
+    company = validate_length(request.form.get("company", ""), "Company name", 150, required=True)
+    role = validate_length(request.form.get("job_role", ""), "Job role", 150, required=True)
+    status = validate_length(selected_value("status", STATUSES, "status_other", required=True), "Status", 60, required=True)
     interview_type = selected_value("interview_type", INTERVIEW_TYPES, "interview_type_other")
     employment_type = selected_value("employment_type", EMPLOYMENT_TYPES, "employment_type_other")
     priority = selected_value("priority", PRIORITIES, "priority_other") or "Medium"
     source = selected_value("source", SOURCES, "source_other")
     values = {
         "company": company, "job_role": role,
-        "location": request.form.get("location", "").strip(),
+        "location": validate_length(request.form.get("location", ""), "Location", 150),
         "application_date": parse_date(request.form.get("application_date"), "application date"),
         "status": status,
         "interview_date": parse_date(request.form.get("interview_date"), "interview date", optional=True),
-        "interview_type": interview_type, "source": source,
-        "notes": request.form.get("notes", "").strip(),
-        "job_description": request.form.get("job_description", "").strip(),
-        "job_url": request.form.get("job_url", "").strip(),
-        "salary": request.form.get("salary", "").strip(),
-        "employment_type": employment_type, "priority": priority,
-        "recruiter_name": request.form.get("recruiter_name", "").strip(),
-        "recruiter_email": request.form.get("recruiter_email", "").strip(),
-        "recruiter_phone": request.form.get("recruiter_phone", "").strip(),
-        "recruiter_url": request.form.get("recruiter_url", "").strip(),
+        "interview_type": validate_length(interview_type, "Interview type", 100), "source": validate_length(source, "Source", 100),
+        "notes": validate_length(request.form.get("notes", ""), "Notes", 10000),
+        "job_description": validate_length(request.form.get("job_description", ""), "Job description", 20000),
+        "job_url": validate_http_url(validate_length(request.form.get("job_url", ""), "Job URL", 500), "Job URL"),
+        "salary": validate_length(request.form.get("salary", ""), "Salary / stipend", 100),
+        "employment_type": validate_length(employment_type, "Employment type", 100), "priority": validate_length(priority, "Priority", 20),
+        "recruiter_name": validate_length(request.form.get("recruiter_name", ""), "Recruiter name", 120),
+        "recruiter_email": validate_length(request.form.get("recruiter_email", ""), "Recruiter email", 150),
+        "recruiter_phone": validate_length(request.form.get("recruiter_phone", ""), "Recruiter phone", 50),
+        "recruiter_url": validate_http_url(validate_length(request.form.get("recruiter_url", ""), "Recruiter URL", 500), "Recruiter URL"),
         "follow_up_date": parse_date(request.form.get("follow_up_date"), "follow-up date", optional=True),
         "assessment_deadline": parse_date(request.form.get("assessment_deadline"), "assessment deadline", optional=True),
-        "resume_version": request.form.get("resume_version", "").strip(),
+        "resume_version": validate_length(request.form.get("resume_version", ""), "Resume version", 120),
     }
-    for url_field in ("job_url", "recruiter_url"):
-        if values[url_field] and not values[url_field].startswith(("https://", "http://")):
-            raise ValueError(f"{url_field.replace('_', ' ').title()} must start with http:// or https://.")
+    if values["recruiter_email"] and not valid_email(values["recruiter_email"]):
+        raise ValueError("Enter a valid recruiter email address.")
     if item is None:
         item = Application(user_id=current_user.id, **values)
         db.session.add(item)
@@ -364,9 +403,10 @@ def edit_application(application_id):
 @login_required
 def delete_application(application_id):
     item = owned_application(application_id)
+    Task.query.filter_by(application_id=item.id, user_id=current_user.id).update({"application_id": None})
     db.session.delete(item)
     db.session.commit()
-    flash("Application deleted.", "success")
+    flash("Application deleted. Linked tasks were kept without an application link.", "success")
     return redirect(request.referrer or url_for("dashboard"))
 
 
@@ -390,6 +430,7 @@ def add_event(application_id):
         flash("Choose an event type and enter a note.", "error")
     else:
         try:
+            details = validate_length(details, "Event details", 5000, required=True)
             event_date = parse_date(request.form.get("event_date"), "event date")
             db.session.add(ApplicationEvent(application_id=item.id, event_type=event_type, details=details, event_date=event_date))
             db.session.commit()
@@ -403,7 +444,8 @@ def add_event(application_id):
 @login_required
 def application_detail(application_id):
     item = owned_application(application_id)
-    return render_template("application_detail.html", item=item, event_types=EVENT_TYPES, today=date.today().isoformat())
+    return render_template("application_detail.html", item=item, event_types=EVENT_TYPES,
+                           interview_types=INTERVIEW_TYPES, today=date.today().isoformat())
 
 
 @app.route("/interviews/add/<int:application_id>", methods=["POST"])
@@ -412,14 +454,12 @@ def add_interview(application_id):
     item = owned_application(application_id)
     try:
         interview_date = parse_date(request.form.get("interview_date"), "interview date")
-        round_name = request.form.get("round_name", "Interview").strip() or "Interview"
-        kind = request.form.get("interview_type", "").strip()
-        if kind == "Other":
-            kind = request.form.get("interview_type_other", "").strip()
-            if not kind:
-                raise ValueError("Please specify the other interview type.")
+        round_name = validate_length(request.form.get("round_name", "Interview"), "Round name", 100, required=True)
+        kind = selected_value("interview_type", INTERVIEW_TYPES, "interview_type_other")
+        kind = validate_length(kind, "Interview type", 100)
+        interview_notes = validate_length(request.form.get("notes", ""), "Interview notes", 5000)
         db.session.add(Interview(application_id=item.id, round_name=round_name, interview_type=kind,
-                                 interview_date=interview_date, notes=request.form.get("notes", "").strip()))
+                                 interview_date=interview_date, notes=interview_notes))
         item.interview_date = interview_date
         item.status = "Interview"
         record_event(item, "Interview scheduled", f"{round_name} · {kind or 'Interview'}", interview_date)
@@ -439,12 +479,17 @@ def tasks_page():
             flash("Task title is required.", "error")
         else:
             try:
+                title = validate_length(title, "Task title", 180, required=True)
+                description = validate_length(request.form.get("description", ""), "Task description", 5000)
                 due = parse_date(request.form.get("due_date"), "due date", optional=True)
                 app_id = request.form.get("application_id", type=int)
-                if app_id and not Application.query.filter_by(id=app_id, user_id=current_user.id).first():
-                    raise ValueError("Choose one of your own applications.")
-                db.session.add(Task(user_id=current_user.id, title=title, description=request.form.get("description", "").strip(),
-                                    due_date=due, priority=request.form.get("priority", "Medium"), application_id=app_id))
+                priority = request.form.get("priority", "Medium")
+                if priority not in PRIORITIES[:3]:
+                    raise ValueError("Choose a valid task priority.")
+                if app_id and not Application.query.filter_by(id=app_id, user_id=current_user.id, archived=False).first():
+                    raise ValueError("Choose one of your own active applications.")
+                db.session.add(Task(user_id=current_user.id, title=title, description=description,
+                                    due_date=due, priority=priority, application_id=app_id))
                 db.session.commit()
                 flash("Task created.", "success")
                 return redirect(url_for("tasks_page"))
@@ -522,24 +567,29 @@ def profile():
         name = request.form.get("name", "").strip()
         email = request.form.get("email", "").strip().lower()
         existing = User.query.filter(User.email == email, User.id != current_user.id).first()
-        if not name or not email:
-            flash("Name and email are required.", "error")
-        elif existing:
-            flash("That email is already in use.", "error")
-        else:
+        try:
+            name = validate_length(name, "Name", 100, required=True)
+            email = validate_length(email, "Email", 150, required=True)
+            if not valid_email(email):
+                raise ValueError("Enter a valid email address.")
+            if existing:
+                raise ValueError("That email is already in use.")
+            goal_raw = request.form.get("weekly_goal", "5")
+            if not goal_raw.isdigit() or not 1 <= int(goal_raw) <= 200:
+                raise ValueError("Weekly goal must be a number between 1 and 200.")
             current_user.name = name
             current_user.email = email
-            current_user.phone = request.form.get("phone", "").strip()
-            current_user.education = request.form.get("education", "").strip()
-            current_user.skills = request.form.get("skills", "").strip()
-            current_user.target_role = request.form.get("target_role", "").strip()
-            try:
-                current_user.weekly_goal = max(1, min(200, int(request.form.get("weekly_goal", "5"))))
-            except ValueError:
-                current_user.weekly_goal = 5
+            current_user.phone = validate_length(request.form.get("phone", ""), "Phone", 40)
+            current_user.education = validate_length(request.form.get("education", ""), "Education", 180)
+            current_user.skills = validate_length(request.form.get("skills", ""), "Skills", 5000)
+            current_user.target_role = validate_length(request.form.get("target_role", ""), "Target role", 150)
+            current_user.weekly_goal = int(goal_raw)
             db.session.commit()
             flash("Profile updated.", "success")
             return redirect(url_for("profile"))
+        except ValueError as error:
+            db.session.rollback()
+            flash(str(error), "error")
     return render_template("profile.html")
 
 
@@ -572,39 +622,75 @@ def export_csv():
 def import_csv():
     if request.method == "POST":
         uploaded = request.files.get("file")
-        if not uploaded or not uploaded.filename.lower().endswith(".csv"):
+        if not uploaded or not uploaded.filename or not uploaded.filename.lower().endswith(".csv"):
             flash("Choose a CSV file to import.", "error")
             return redirect(url_for("import_csv"))
         try:
             stream = io.StringIO(uploaded.stream.read().decode("utf-8-sig"), newline=None)
             reader = csv.DictReader(stream)
-            if not reader.fieldnames or not {"company", "job_role"}.issubset({h.strip().lower() for h in reader.fieldnames}):
-                raise ValueError("CSV must include at least Company and Job role columns (company, job_role).")
-            # Normalize header names so exported CareerTrack CSV files can be re-imported.
-            count = 0
-            for row in reader:
-                normalized = {str(k or "").strip().lower().replace(" ", "_"): (v or "").strip() for k, v in row.items()}
+            headers = {str(h or "").strip().lower().replace(" ", "_") for h in (reader.fieldnames or [])}
+            if not {"company", "job_role"}.issubset(headers):
+                raise ValueError("CSV must include Company and Job role columns (company, job_role).")
+            existing_keys = {
+                (a.company.strip().casefold(), a.job_role.strip().casefold(), a.application_date.isoformat())
+                for a in Application.query.filter_by(user_id=current_user.id).all()
+            }
+            seen_keys = set()
+            imported = skipped_invalid = skipped_duplicate = 0
+            for row_number, row in enumerate(reader, start=2):
+                if row_number > 5001:
+                    raise ValueError("A maximum of 5,000 data rows can be imported at once.")
+                normalized = {str(k or "").strip().lower().replace(" ", "_"): str(v or "").strip()
+                              for k, v in row.items() if k is not None}
                 company = normalized.get("company", "")
-                role = normalized.get("job_role", normalized.get("job_role_", ""))
-                if not company or not role:
+                role = normalized.get("job_role", "")
+                if not company or not role or len(company) > 150 or len(role) > 150:
+                    skipped_invalid += 1
                     continue
                 raw_date = normalized.get("application_date", "") or normalized.get("date_applied", "")
                 try:
                     applied = date.fromisoformat(raw_date) if raw_date else date.today()
                 except ValueError:
-                    applied = date.today()
-                status = normalized.get("status", "Applied") or "Applied"
-                if status not in STATUSES:
-                    status = status[:60]
-                item = Application(user_id=current_user.id, company=company[:150], job_role=role[:150],
+                    skipped_invalid += 1
+                    continue
+                key = (company.casefold(), role.casefold(), applied.isoformat())
+                if key in existing_keys or key in seen_keys:
+                    skipped_duplicate += 1
+                    continue
+                raw_status = normalized.get("status", "Applied") or "Applied"
+                status = raw_status[:60]
+                raw_priority = normalized.get("priority", "Medium") or "Medium"
+                priority = raw_priority[:20] if raw_priority in PRIORITIES or raw_priority == "Other" else "Other"
+                try:
+                    optional_dates = {
+                        field: date.fromisoformat(normalized[field]) if normalized.get(field) else None
+                        for field in ("interview_date", "follow_up_date", "assessment_deadline")
+                    }
+                    job_url = validate_http_url(normalized.get("job_url", "")[:500], "Job URL")
+                    recruiter_email = normalized.get("recruiter_email", "")[:150]
+                    if recruiter_email and not valid_email(recruiter_email):
+                        raise ValueError("Invalid recruiter email")
+                except ValueError:
+                    skipped_invalid += 1
+                    continue
+                item = Application(
+                    user_id=current_user.id, company=company, job_role=role,
                     location=normalized.get("location", "")[:150], application_date=applied, status=status,
+                    interview_date=optional_dates["interview_date"],
                     interview_type=normalized.get("interview_type", "")[:100], source=normalized.get("source", "")[:100],
                     salary=normalized.get("salary", "")[:100], employment_type=normalized.get("employment_type", "")[:100],
-                    priority=normalized.get("priority", "Medium")[:20], notes=normalized.get("notes", ""))
+                    priority=priority, job_url=job_url,
+                    follow_up_date=optional_dates["follow_up_date"],
+                    assessment_deadline=optional_dates["assessment_deadline"],
+                    recruiter_name=normalized.get("recruiter_name", "")[:120], recruiter_email=recruiter_email,
+                    recruiter_phone=normalized.get("recruiter_phone", "")[:50], resume_version=normalized.get("resume_version", "")[:120],
+                    notes=normalized.get("notes", "")[:10000]
+                )
                 db.session.add(item)
-                count += 1
+                seen_keys.add(key)
+                imported += 1
             db.session.commit()
-            flash(f"Imported {count} application(s). Rows without a company or job role were skipped.", "success")
+            flash(f"Imported {imported} application(s). Skipped {skipped_duplicate} duplicate row(s) and {skipped_invalid} invalid row(s).", "success")
             return redirect(url_for("dashboard"))
         except (UnicodeDecodeError, csv.Error, ValueError) as error:
             db.session.rollback()
@@ -621,14 +707,16 @@ def change_password():
     confirm_password = request.form.get("confirm_password", "")
     if not current_user.check_password(current_password):
         flash("Your current password is incorrect.", "error")
-    elif len(new_password) < 8:
-        flash("New password must contain at least 8 characters.", "error")
+    elif len(new_password) < 8 or len(new_password) > 128:
+        flash("New password must contain between 8 and 128 characters.", "error")
     elif new_password != confirm_password:
         flash("New password and confirmation do not match.", "error")
     else:
         current_user.set_password(new_password)
         db.session.commit()
-        flash("Password changed successfully.", "success")
+        logout_user()
+        flash("Password changed successfully. Please sign in again with your new password.", "success")
+        return redirect(url_for("login"))
     return redirect(url_for("profile"))
 
 
@@ -643,6 +731,9 @@ def archive_page():
 @login_required
 def delete_account():
     user = db.session.get(User, current_user.id)
+    if not user or not user.check_password(request.form.get("current_password", "")):
+        flash("Enter your current password to confirm account deletion.", "error")
+        return redirect(url_for("profile"))
     logout_user()
     db.session.delete(user)
     db.session.commit()

@@ -9,3 +9,6 @@
 @media(max-width:650px){.welcome-actions{width:100%}.welcome-actions .btn{flex:1}.quick-nav{gap:6px}.quick-nav>a,.quick-nav-button{padding:8px;font-size:10px}.analytics-grid{gap:13px}.chart-bars{padding:5px 10px 0;gap:6px}.chart-col small{font-size:8px}.detail-header{padding:18px}.detail-header h1{font-size:22px}.detail-panel{padding:17px}.detail-list{grid-template-columns:110px 1fr}.task-row{gap:8px}.calendar-event{gap:8px}.calendar-event-date{min-width:84px}.kanban-board{grid-template-columns:repeat(8,minmax(210px,1fr))}}
 
 .fill-offer{background:#37b889}
+
+/* Security and responsive navigation refinements */
+.btn.danger{cursor:pointer}.chart-empty{padding:22px 12px}.nav{min-width:0}@media(max-width:850px){.topbar{height:auto;min-height:68px;align-items:flex-start;gap:12px;padding:14px 5%;flex-direction:column}.nav{width:100%;gap:8px;overflow-x:auto;white-space:nowrap;padding-bottom:5px}.nav>a,.nav form{flex:0 0 auto}.nav>a:first-child{display:block}.page-shell{padding:25px 16px 50px}}@media(max-width:480px){.nav{font-size:12px}.nav-cta{padding:8px 10px}.detail-header .welcome-actions form{width:100%}.detail-header .welcome-actions form .btn{width:100%}.chart-bars{gap:4px}.chart-col small{font-size:7px}}
